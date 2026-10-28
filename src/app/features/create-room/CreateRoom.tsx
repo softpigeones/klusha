@@ -92,6 +92,7 @@ export function CreateRoomForm({
     useAdditionalCreators();
   const [federation, setFederation] = useState(true);
   const [encryption, setEncryption] = useState(false);
+  const [stateEncryption, setStateEncryption] = useState(false);
   const [knock, setKnock] = useState(false);
   const [advance, setAdvance] = useState(false);
 
@@ -148,6 +149,8 @@ export function CreateRoomForm({
       topic: roomTopic || undefined,
       aliasLocalPart: publicRoom ? aliasLocalPart : undefined,
       encryption: publicRoom ? false : encryption,
+      // MSC4362, encrypted state requires an encrypted room
+      stateEncryption: publicRoom ? false : encryption && stateEncryption,
       knock: roomKnock,
       allowFederation: federation,
       additionalCreators: allowAdditionalCreators ? additionalCreators : undefined,
@@ -257,6 +260,27 @@ export function CreateRoomForm({
                 }
               />
             </SequenceCard>
+            {encryption && (
+              <SequenceCard
+                style={{ padding: config.space.S300 }}
+                variant="SurfaceVariant"
+                direction="Column"
+                gap="500"
+              >
+                <SettingTile
+                  title="Encrypt Room Metadata"
+                  description="Encrypts room state such as name, topic and avatar (MSC4362). Clients without support can't read them and members joining later may not see earlier changes. Can't be disabled after the room is created."
+                  after={
+                    <Switch
+                      variant="Primary"
+                      value={stateEncryption}
+                      onChange={setStateEncryption}
+                      disabled={disabled}
+                    />
+                  }
+                />
+              </SequenceCard>
+            )}
             {advance && (allowKnock || allowKnockRestricted) && (
               <SequenceCard
                 style={{ padding: config.space.S300 }}

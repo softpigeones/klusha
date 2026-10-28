@@ -8,7 +8,8 @@ import { useMatrixClient } from '../../hooks/useMatrixClient';
 import { useMediaAuthentication } from '../../hooks/useMediaAuthentication';
 import { usePowerLevels } from '../../hooks/usePowerLevels';
 import { useRoom } from '../../hooks/useRoom';
-import { useUserPresence } from '../../hooks/useUserPresence';
+import { useUserPresence, useUserPresenceWatch } from '../../hooks/useUserPresence';
+import { PresenceStatusChip, usePresenceLastActiveText } from '../presence';
 import { IgnoredUserAlert, MutualRoomsChip, OptionsChip, ServerChip, ShareChip } from './UserChips';
 import { useCloseUserRoomProfile } from '../../state/hooks/userRoomProfile';
 import { PowerChip } from './PowerChip';
@@ -58,6 +59,14 @@ export function UserRoomProfile({ userId }: UserRoomProfileProps) {
   const avatarUrl = (avatarMxc && mxcUrlToHttp(mx, avatarMxc, useAuthentication)) ?? undefined;
 
   const presence = useUserPresence(userId);
+  // Presence of users which do not share a room with us is not part of /sync,
+  // keep it up to date while the profile is open.
+  useUserPresenceWatch(userId);
+  const lastActiveText = usePresenceLastActiveText(
+    presence?.presence,
+    presence?.lastActiveTs,
+    presence?.currentlyActive
+  );
 
   const handleMessage = () => {
     closeUserRoomProfile();
@@ -69,11 +78,7 @@ export function UserRoomProfile({ userId }: UserRoomProfileProps) {
 
   return (
     <Box direction="Column">
-      <UserHero
-        userId={userId}
-        avatarUrl={avatarUrl}
-        presence={presence && presence.lastActiveTs !== 0 ? presence : undefined}
-      />
+      <UserHero userId={userId} avatarUrl={avatarUrl} presence={presence} />
       <Box direction="Column" gap="500" style={{ padding: config.space.S400 }}>
         <Box direction="Column" gap="400">
           <Box gap="400" alignItems="Start">
@@ -93,6 +98,17 @@ export function UserRoomProfile({ userId }: UserRoomProfileProps) {
               </Box>
             )}
           </Box>
+          {presence?.status && (
+            <PresenceStatusChip status={presence.status} />
+          )}
+          {lastActiveText && (
+            <Box alignItems="Center" gap="100">
+              <Icon size="50" src={Icons.Clock} filled />
+              <Text size="T200" priority="300">
+                {lastActiveText}
+              </Text>
+            </Box>
+          )}
           <Box alignItems="Center" gap="200" wrap="Wrap">
             {server && <ServerChip server={server} />}
             <ShareChip userId={userId} />

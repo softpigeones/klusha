@@ -432,6 +432,8 @@ export const getEditedEvent = (
   return edits && getLatestEdit(mEvent, edits.getRelations());
 };
 
+import { isGalleryMsgType } from '../../types/matrix/common';
+
 export const canEditEvent = (mx: MatrixClient, mEvent: MatrixEvent) => {
   const content = mEvent.getContent();
   const relationType = content['m.relates_to']?.rel_type;
@@ -439,10 +441,14 @@ export const canEditEvent = (mx: MatrixClient, mEvent: MatrixEvent) => {
     mEvent.getSender() === mx.getUserId() &&
     (!relationType || relationType === RelationType.Thread) &&
     mEvent.getType() === MessageEvent.RoomMessage &&
-    (content.msgtype === MsgType.Text ||
+    (content.msgtype === MsgType.Text || isMediaEvent(content) ||
       content.msgtype === MsgType.Emote ||
       content.msgtype === MsgType.Notice)
   );
+};
+
+export const isMediaEvent = (content: IContent) => {
+    return (typeof content?.url === "string" || isGalleryMsgType(content.msgtype));
 };
 
 export const getLatestEditableEvt = (

@@ -109,3 +109,25 @@ export type MemberPowerTag = {
   color?: string;
   icon?: MemberPowerTagIcon;
 };
+
+/**
+ * MSC4362 (simplified encrypted state events).
+ *
+ * Unstable property of the `m.room.encryption` state event which opts a room into
+ * end-to-end encrypted state events. Once set, it can not be removed again.
+ */
+export const MSC4362_ENCRYPT_STATE_EVENTS_PROPERTY = 'io.element.msc4362.encrypt_state_events';
+
+/**
+ * State events which are never encrypted, even in a room with encrypted state (MSC4362).
+ */
+export const MSC4362_UNENCRYPTED_STATE_EVENTS: string[] = [
+  StateEvent.RoomCreate,
+  StateEvent.RoomMember,
+  StateEvent.RoomJoinRules,
+  StateEvent.RoomPowerLevels,
+  StateEvent.RoomThirdPartyInvite,
+  StateEvent.RoomHistoryVisibility,
+  StateEvent.RoomGuestAccess,
+  StateEvent.RoomEncryption,
+];

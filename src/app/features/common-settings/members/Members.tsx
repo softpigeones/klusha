@@ -47,6 +47,7 @@ import { useSetting } from '../../../state/hooks/settings';
 import { UseStateProvider } from '../../../components/UseStateProvider';
 import { MembershipFilterMenu } from '../../../components/MembershipFilterMenu';
 import { MemberSortMenu } from '../../../components/MemberSortMenu';
+import { useUserPresenceWatcher } from '../../../hooks/useUserPresence';
 import { ScrollTopContainer } from '../../../components/scroll-top-container';
 import {
   useOpenUserRoomProfile,
@@ -123,6 +124,21 @@ export function Members({ requestClose }: MembersProps) {
     estimateSize: () => 40,
     overscan: 10,
   });
+
+  // members which are currently rendered, used to keep their presence up to date
+  const virtualItems = virtualizer.getVirtualItems();
+  const renderedMemberIds = useMemo(
+    () =>
+      virtualItems
+        .map((vItem) => flattenTagMembers[vItem.index])
+        .filter(
+          (tagOrMember): tagOrMember is RoomMember => !!tagOrMember && 'userId' in tagOrMember
+        )
+        .map((member) => member.userId),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [virtualItems, flattenTagMembers]
+  );
+  useUserPresenceWatcher(renderedMemberIds);
 
   const handleSearchChange: ChangeEventHandler<HTMLInputElement> = useDebounce(
     useCallback(
@@ -307,7 +323,7 @@ export function Members({ requestClose }: MembersProps) {
                 direction="Column"
                 gap="100"
               >
-                {virtualizer.getVirtualItems().map((vItem) => {
+                {virtualItems.map((vItem) => {
                   const tagOrMember = flattenTagMembers[vItem.index];
 
                   if ('userId' in tagOrMember) {

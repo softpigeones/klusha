@@ -12,15 +12,8 @@ export const AuthLayout = style({
 });
 
 export const AuthCard = style({
-  marginTop: '1vh',
-  maxWidth: toRem(460),
-  width: '100%',
-  backgroundColor: color.Surface.Container,
-  color: color.Surface.OnContainer,
-  borderRadius: config.radii.R400,
-  boxShadow: config.shadow.E100,
-  border: `${config.borderWidth.B300} solid ${color.Surface.ContainerLine}`,
-  overflow: 'hidden',
+  borderRadius:0,
+  background:0,
 });
 
 export const AuthLogo = style([

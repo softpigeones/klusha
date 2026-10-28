@@ -47,6 +47,8 @@ import { settingsAtom } from '../../state/settings';
 import { millify } from '../../plugins/millify';
 import { ScrollTopContainer } from '../../components/scroll-top-container';
 import { UserAvatar } from '../../components/user-avatar';
+import { PresenceAvatar } from '../../components/presence';
+import { useUserPresenceWatcher } from '../../hooks/useUserPresence';
 import { useRoomTypingMember } from '../../hooks/useRoomTypingMembers';
 import { useMediaAuthentication } from '../../hooks/useMediaAuthentication';
 import { useMembershipFilter, useMembershipFilterMenu } from '../../hooks/useMemberFilter';
@@ -135,14 +137,16 @@ function MemberItem({
       radii="400"
       onClick={onClick}
       before={
-        <Avatar size="200">
-          <UserAvatar
-            userId={member.userId}
-            src={avatarUrl ?? undefined}
-            alt={name}
-            renderFallback={() => <Icon size="50" src={Icons.User} filled />}
-          />
-        </Avatar>
+        <PresenceAvatar userId={member.userId} ringVariant="Background" badgeSize="200">
+          <Avatar size="200">
+            <UserAvatar
+              userId={member.userId}
+              src={avatarUrl ?? undefined}
+              alt={name}
+              renderFallback={() => <Icon size="50" src={Icons.User} filled />}
+            />
+          </Avatar>
+        </PresenceAvatar>
       }
       after={
         typing && (
@@ -225,6 +229,19 @@ export function MembersDrawer({ room, members }: MembersDrawerProps) {
     estimateSize: () => 40,
     overscan: 10,
   });
+
+  // members which are currently rendered, used to keep their presence up to date
+  const virtualItems = virtualizer.getVirtualItems();
+  const renderedMemberIds = useMemo(
+    () =>
+      virtualItems
+        .map((vItem) => PLTagOrRoomMember[vItem.index])
+        .filter((tagOrMember): tagOrMember is RoomMember => 'userId' in tagOrMember)
+        .map((member) => member.userId),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [virtualItems, PLTagOrRoomMember]
+  );
+  useUserPresenceWatcher(renderedMemberIds);
 
   const handleSearchChange: ChangeEventHandler<HTMLInputElement> = useDebounce(
     useCallback(
@@ -383,7 +400,7 @@ export function MembersDrawer({ room, members }: MembersDrawerProps) {
                   height: virtualizer.getTotalSize(),
                 }}
               >
-                {virtualizer.getVirtualItems().map((vItem) => {
+                {virtualItems.map((vItem) => {
                   const tagOrMember = PLTagOrRoomMember[vItem.index];
                   if (!('userId' in tagOrMember)) {
                     return (

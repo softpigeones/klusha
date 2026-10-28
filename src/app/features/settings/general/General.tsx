@@ -741,6 +741,49 @@ function Editor() {
   );
 }
 
+function Presence() {
+  const [showPresence, setShowPresence] = useSetting(settingsAtom, 'showPresence');
+
+  return (
+    <Box direction="Column" gap="100">
+      <Text size="L400">Presence</Text>
+      <SequenceCard className={SequenceCardStyle} variant="SurfaceVariant" direction="Column">
+        <SettingTile
+          title="Show Presence of Other Users"
+          description="Display active, busy and away indicators next to avatars, along with the time a user was last seen."
+          after={<Switch variant="Primary" value={showPresence} onChange={setShowPresence} />}
+        />
+      </SequenceCard>
+    </Box>
+  );
+}
+
+function AudioMetadata() {
+  const [msc4549AudioMetadata, setMsc4549AudioMetadata] = useSetting(
+    settingsAtom,
+    'msc4549AudioMetadata'
+  );
+
+  return (
+    <Box direction="Column" gap="100">
+      <Text size="L400">Audio Metadata</Text>
+      <SequenceCard className={SequenceCardStyle} variant="SurfaceVariant" direction="Column">
+        <SettingTile
+          title="Attach Metadata to Audio Messages"
+          description="Read title, artist, album and cover art from uploaded audio files and attach them to your messages (MSC4549). Receiving clients can display this information without downloading the file."
+          after={
+            <Switch
+              variant="Primary"
+              value={msc4549AudioMetadata}
+              onChange={setMsc4549AudioMetadata}
+            />
+          }
+        />
+      </SequenceCard>
+    </Box>
+  );
+}
+
 function SelectMessageLayout() {
   const [menuCords, setMenuCords] = useState<RectCords>();
   const [messageLayout, setMessageLayout] = useSetting(settingsAtom, 'messageLayout');
@@ -1005,6 +1048,8 @@ export function General({ requestClose }: GeneralProps) {
               <Appearance />
               <DateAndTime />
               <Editor />
+              <Presence />
+              <AudioMetadata />
               <Messages />
             </Box>
           </PageContent>

@@ -4,6 +4,7 @@ import { MatrixClient, Room, RoomMember } from 'matrix-js-sdk';
 import { getMemberDisplayName } from '../../utils/room';
 import { getMxIdLocalPart } from '../../utils/matrix';
 import { UserAvatar } from '../user-avatar';
+import { PresenceAvatar } from '../presence';
 import * as css from './style.css';
 
 const getName = (room: Room, member: RoomMember) =>
@@ -28,14 +29,16 @@ export const MemberTile = as<'button', MemberTileProps>(
 
     return (
       <AsMemberTile className={css.MemberTile} {...props} ref={ref}>
-        <Avatar size="300" radii="400">
-          <UserAvatar
-            userId={member.userId}
-            src={avatarUrl ?? undefined}
-            alt={name}
-            renderFallback={() => <Icon size="300" src={Icons.User} filled />}
-          />
-        </Avatar>
+        <PresenceAvatar userId={member.userId} badgeSize="200">
+          <Avatar size="300" radii="400">
+            <UserAvatar
+              userId={member.userId}
+              src={avatarUrl ?? undefined}
+              alt={name}
+              renderFallback={() => <Icon size="300" src={Icons.User} filled />}
+            />
+          </Avatar>
+        </PresenceAvatar>
         <Box grow="Yes" as="span" direction="Column">
           <Text as="span" size="T300" truncate>
             <b>{name}</b>

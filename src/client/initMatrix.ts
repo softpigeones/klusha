@@ -1,8 +1,16 @@
-import { createClient, MatrixClient, IndexedDBStore, IndexedDBCryptoStore } from 'matrix-js-sdk';
+import {
+  createClient,
+  MatrixClient,
+  IndexedDBStore,
+  IndexedDBCryptoStore,
+  SetPresence,
+} from 'matrix-js-sdk';
 
 import { cryptoCallbacks } from './secretStorageKeys';
 import { clearNavToActivePathStore } from '../app/state/navToActivePath';
 import { pushSessionToSW } from '../sw-session';
+import { readStoredSyncPresence } from '../app/utils/presence';
+import { setupEncryptedStateEventHandling } from './encryptedStateEvents';
 
 type Session = {
   baseUrl: string;
@@ -30,10 +38,18 @@ export const initClient = async (session: Session): Promise<MatrixClient> => {
     timelineSupport: true,
     cryptoCallbacks: cryptoCallbacks as any,
     verificationMethods: ['m.sas.v1'],
+    // MSC4362 (simplified encrypted state events): rooms can opt into encrypting their
+    // state. The flag is always on, so that rooms which already encrypt their state keep
+    // working - whether a room encrypts state is decided by its `m.room.encryption` event.
+    enableEncryptedStateEvents: true,
   });
 
   await indexedDBStore.startup();
   await mx.initRustCrypto();
+
+  // MSC4362: keep room state usable for state events which are decrypted after they were
+  // added to the room state
+  setupEncryptedStateEventHandling(mx);
 
   mx.setMaxListeners(50);
 
@@ -44,6 +60,13 @@ export const startClient = async (mx: MatrixClient) => {
   await mx.startClient({
     lazyLoadMembers: true,
   });
+
+  // A manually selected presence (e.g. busy) has to be re-applied after the sync loop has
+  // been started, `set_presence` of `/sync` is what keeps it from flipping back to online.
+  const storedPresence = readStoredSyncPresence();
+  if (storedPresence) {
+    await mx.setSyncPresence(storedPresence as string as SetPresence);
+  }
 };
 
 export const clearCacheAndReload = async (mx: MatrixClient) => {

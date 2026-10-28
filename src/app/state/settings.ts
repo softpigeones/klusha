@@ -43,6 +43,10 @@ export interface Settings {
   showNotifications: boolean;
   isNotificationSounds: boolean;
 
+  /** Show presence indicators (next to avatars) and last seen information of other users. */
+  showPresence: boolean;
+  msc4549AudioMetadata: boolean;
+
   hour24Clock: boolean;
   dateFormatString: string;
 
@@ -76,6 +80,9 @@ const defaultSettings: Settings = {
 
   showNotifications: true,
   isNotificationSounds: true,
+
+  showPresence: true,
+  msc4549AudioMetadata: false,
 
   hour24Clock: false,
   dateFormatString: 'D MMM YYYY',

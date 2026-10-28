@@ -9,7 +9,7 @@ import React, {
 } from 'react';
 import { useAtom, useAtomValue } from 'jotai';
 import { isKeyHotkey } from 'is-hotkey';
-import { EventType, IContent, MsgType, RelationType, Room } from 'matrix-js-sdk';
+import { EventType, IContent, MatrixClient, MsgType, RelationType, Room } from 'matrix-js-sdk';
 import { ReactEditor } from 'slate-react';
 import { Transforms, Editor } from 'slate';
 import {
@@ -28,6 +28,10 @@ import {
   config,
   toRem,
 } from 'folds';
+
+// MSC4549: extract audio metadata (ID3/Vorbis/etc.) and compute cover-art blurhash.
+import { parseBlob as parseAudioMetadata } from 'music-metadata';
+import { encode as encodeBlurhash } from 'blurhash';
 
 import { useMatrixClient } from '../../hooks/useMatrixClient';
 import {
@@ -117,6 +121,116 @@ import { useTheme } from '../../hooks/useTheme';
 import { useRoomCreatorsTag } from '../../hooks/useRoomCreatorsTag';
 import { usePowerLevelTags } from '../../hooks/usePowerLevelTags';
 import { useComposingCheck } from '../../hooks/useComposingCheck';
+import { MATRIX_GALLERY_UNSTABLE_MSGTYPE } from '../../../types/matrix/common';
+
+// Each gallery item adds roughly 1 KB to the event; the event limit is 64 KiB.
+const MAX_GALLERY_ITEMS = 50;
+
+/**
+ * MSC4549: Extract audio metadata from an uploaded file and (optionally)
+ * upload the embedded cover art, returning a payload suitable for
+ * `info["org.matrix.msc4549.audio_metadata"]`.
+ *
+ * The unstable key is used because the MSC is not yet in the spec; switch
+ * to `audio_metadata` once MSC4549 is merged.
+ *
+ * Returns `undefined` if the file has no usable metadata — callers should
+ * then send the plain `m.audio` event unchanged.
+ */
+async function extractMSC4549AudioMetadata(
+  fileItem: TUploadItem,
+  mx: MatrixClient,
+  room: Room
+): Promise<Record<string, unknown> | undefined> {
+  let metadata;
+  try {
+    // Parse the *original* (unencrypted) file: `fileItem.file` may be the
+    // encrypted blob when the room is encrypted.
+    metadata = await parseAudioMetadata(fileItem.originalFile, { duration: false });
+  } catch (err) {
+    // Unknown container / no tags — nothing to add.
+    return undefined;
+  }
+
+  const result: Record<string, unknown> = {};
+
+  if (metadata.common.title) result.title = metadata.common.title;
+  if (metadata.common.artist) result.artist = metadata.common.artist;
+  if (metadata.common.album) result.album = metadata.common.album;
+
+  const picture = metadata.common.picture?.[0];
+  if (picture) {
+    try {
+      const blob = new Blob([picture.data as BlobPart], { type: picture.format });
+      const ext = (picture.format.split('/')[1] || 'jpg').split(';')[0];
+      const coverFile = new File([blob], `cover.${ext}`, { type: picture.format });
+
+      if (room.hasEncryptionStateEvent()) {
+        const encrypted = await encryptFile(coverFile);
+        const uploaded = await mx.uploadContent(encrypted.file);
+        result.cover_art_file = {
+          url: uploaded.content_uri,
+          ...encrypted.encInfo,
+        };
+      } else {
+        const uploaded = await mx.uploadContent(coverFile);
+        result.cover_art = uploaded.content_uri;
+      }
+
+      result.cover_art_info = {
+        mimetype: picture.format,
+        ...(picture.width ? { w: picture.width } : {}),
+        ...(picture.height ? { h: picture.height } : {}),
+        size: blob.size,
+      };
+
+      // MSC4549 `cover_art_blurhash`: compute from the same image.
+      try {
+        result.cover_art_blurhash = await computeBlurhash(blob);
+      } catch {
+        // Non-fatal: receiving clients will just skip the placeholder.
+      }
+    } catch (err) {
+      // Cover art upload / encryption failed — keep text metadata, drop cover.
+      // eslint-disable-next-line no-console
+      console.warn('[MSC4549] Failed to upload cover art:', err);
+    }
+  }
+
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+/** Decode-to-canvas → encode as a compact BlurHash. */
+function computeBlurhash(blob: Blob): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    const img = new window.Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      try {
+        const size = 32;
+        const canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          reject(new Error('No 2D context'));
+          return;
+        }
+        ctx.drawImage(img, 0, 0, size, size);
+        const { data } = ctx.getImageData(0, 0, size, size);
+        resolve(encodeBlurhash(data, size, size, 4, 3));
+      } catch (err) {
+        reject(err);
+      }
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('Failed to load image for BlurHash'));
+    };
+    img.src = url;
+  });
+}
 
 interface RoomInputProps {
   editor: Editor;
@@ -132,6 +246,13 @@ export const RoomInput = forwardRef<HTMLDivElement, RoomInputProps>(
     const [isMarkdown] = useSetting(settingsAtom, 'isMarkdown');
     const [hideActivity] = useSetting(settingsAtom, 'hideActivity');
     const [legacyUsernameColor] = useSetting(settingsAtom, 'legacyUsernameColor');
+    // MSC4549: toggle for attaching audio metadata to outgoing `m.audio`
+    // events. Default is ON — the setting lets users opt out. Add
+    // `msc4549AudioMetadata: boolean` to the Settings type (default `true`)
+    // so this key resolves via `useSetting`.
+    const [msc4549AudioMetadataSetting] = useSetting(settingsAtom, 'msc4549AudioMetadata');
+    const msc4549AudioMetadata = msc4549AudioMetadataSetting ?? true;
+
     const direct = useIsDirectRoom();
     const commands = useCommands(mx, room);
     const emojiBtnRef = useRef<HTMLButtonElement>(null);
@@ -161,12 +282,20 @@ export const RoomInput = forwardRef<HTMLDivElement, RoomInputProps>(
       legacyUsernameColor || direct ? colorMXID(replyUserID ?? '') : replyPowerColor;
 
     const [uploadBoard, setUploadBoard] = useState(true);
+    const [sendAsGallery, setSendAsGallery] = useState(false);
     const [selectedFiles, setSelectedFiles] = useAtom(roomIdToUploadItemsAtomFamily(roomId));
     const uploadFamilyObserverAtom = createUploadFamilyObserverAtom(
       roomUploadAtomFamily,
       selectedFiles.map((f) => f.file)
     );
     const uploadBoardHandlers = useRef<UploadBoardImperativeHandlers>();
+
+    const pendingCaptionRef = useRef<{
+      body: string;
+      formattedBody?: string;
+      relatesTo?: Record<string, any>;
+      mentions?: any;
+    } | null>(null);
 
     const imagePackRooms: Room[] = useImagePackRooms(roomId, roomToParents);
 
@@ -276,6 +405,9 @@ export const RoomInput = forwardRef<HTMLDivElement, RoomInputProps>(
     };
 
     const handleSendUpload = async (uploads: UploadSuccess[]) => {
+      const caption = pendingCaptionRef.current;
+      pendingCaptionRef.current = null;
+
       const contentsPromises = uploads.map(async (upload) => {
         const fileItem = selectedFiles.find((f) => f.file === upload.file);
         if (!fileItem) throw new Error('Broken upload');
@@ -287,17 +419,86 @@ export const RoomInput = forwardRef<HTMLDivElement, RoomInputProps>(
           return getVideoMsgContent(mx, fileItem, upload.mxc);
         }
         if (fileItem.file.type.startsWith('audio')) {
-          return getAudioMsgContent(fileItem, upload.mxc);
+          const content = (await getAudioMsgContent(fileItem, upload.mxc)) as IContent & {
+            info?: Record<string, any>;
+          };
+          if (msc4549AudioMetadata) {
+            try {
+              const audioMeta = await extractMSC4549AudioMetadata(fileItem, mx, room);
+              if (audioMeta) {
+                content.info = {
+                  ...(content.info ?? {}),
+                  // Unstable prefix per MSC4549 until it is merged into the spec.
+                  'org.matrix.msc4549.audio_metadata': audioMeta,
+                };
+              }
+            } catch (err) {
+              // Never block the audio message itself on metadata extraction.
+              // eslint-disable-next-line no-console
+              console.warn('[MSC4549] Audio metadata extraction failed:', err);
+            }
+          }
+          return content;
         }
         return getFileMsgContent(fileItem, upload.mxc);
       });
       handleCancelUpload(uploads);
       const contents = fulfilledPromiseSettledResult(await Promise.allSettled(contentsPromises));
-      contents.forEach((content) => mx.sendMessage(roomId, content as any));
+
+      if (sendAsGallery && contents.length > 1) {
+        // MSC4274: until accepted, the unstable msgtype is used. Chunked to
+        // stay well below the 64 KiB event size limit.
+        for (let i = 0; i < contents.length; i += MAX_GALLERY_ITEMS) {
+          const itemtypes = contents.slice(i, i + MAX_GALLERY_ITEMS).map((content) => {
+            const { msgtype, ...item } = content;
+            return { ...item, itemtype: msgtype };
+          });
+          mx.sendMessage(roomId, {
+            msgtype: MATRIX_GALLERY_UNSTABLE_MSGTYPE,
+            body: caption?.body ?? '',
+            ...(caption?.formattedBody
+              ? {
+                  format: 'org.matrix.custom.html',
+                  formatted_body: caption.formattedBody,
+                }
+              : {}),
+            ...(caption?.relatesTo ? { 'm.relates_to': caption.relatesTo } : {}),
+            ...(caption?.mentions ? { 'm.mentions': caption.mentions } : {}),
+            itemtypes,
+          } as any);
+        }
+        return;
+      }
+
+      contents.forEach((content, index) => {
+        if (index === 0 && caption) {
+          const mediaContent: any = { ...content };
+
+          if (caption.body) {
+            if (!mediaContent.filename) {
+              mediaContent.filename = mediaContent.body;
+            }
+            mediaContent.body = caption.body;
+            if (caption.formattedBody) {
+              mediaContent.format = 'org.matrix.custom.html';
+              mediaContent.formatted_body = caption.formattedBody;
+            }
+          }
+          if (caption.relatesTo) {
+            mediaContent['m.relates_to'] = caption.relatesTo;
+          }
+          if (caption.mentions) {
+            mediaContent['m.mentions'] = caption.mentions;
+          }
+          mx.sendMessage(roomId, mediaContent);
+        } else {
+          mx.sendMessage(roomId, content as any);
+        }
+      });
     };
 
     const submit = useCallback(() => {
-      uploadBoardHandlers.current?.handleSend();
+      const hasFiles = selectedFiles.length > 0;
 
       const commandName = getBeginCommand(editor);
       let plainText = toPlainText(editor.children, isMarkdown).trim();
@@ -310,74 +511,109 @@ export const RoomInput = forwardRef<HTMLDivElement, RoomInputProps>(
       );
       let msgType = MsgType.Text;
 
-      if (commandName) {
-        plainText = trimCommand(commandName, plainText);
-        customHtml = trimCommand(commandName, customHtml);
-      }
-      if (commandName === Command.Me) {
-        msgType = MsgType.Emote;
-      } else if (commandName === Command.Notice) {
-        msgType = MsgType.Notice;
-      } else if (commandName === Command.Shrug) {
-        plainText = `${SHRUG} ${plainText}`;
-        customHtml = `${SHRUG} ${customHtml}`;
-      } else if (commandName === Command.TableFlip) {
-        plainText = `${TABLEFLIP} ${plainText}`;
-        customHtml = `${TABLEFLIP} ${customHtml}`;
-      } else if (commandName === Command.UnFlip) {
-        plainText = `${UNFLIP} ${plainText}`;
-        customHtml = `${UNFLIP} ${customHtml}`;
-      } else if (commandName) {
-        const commandContent = commands[commandName as Command];
-        if (commandContent) {
-          commandContent.exe(plainText);
+      if (!hasFiles) {
+        if (commandName) {
+          plainText = trimCommand(commandName, plainText);
+          customHtml = trimCommand(commandName, customHtml);
         }
+        if (commandName === Command.Me) {
+          msgType = MsgType.Emote;
+        } else if (commandName === Command.Notice) {
+          msgType = MsgType.Notice;
+        } else if (commandName === Command.Shrug) {
+          plainText = `${SHRUG} ${plainText}`;
+          customHtml = `${SHRUG} ${customHtml}`;
+        } else if (commandName === Command.TableFlip) {
+          plainText = `${TABLEFLIP} ${plainText}`;
+          customHtml = `${TABLEFLIP} ${customHtml}`;
+        } else if (commandName === Command.UnFlip) {
+          plainText = `${UNFLIP} ${plainText}`;
+          customHtml = `${UNFLIP} ${customHtml}`;
+        } else if (commandName) {
+          const commandContent = commands[commandName as Command];
+          if (commandContent) {
+            commandContent.exe(plainText);
+          }
+          resetEditor(editor);
+          resetEditorHistory(editor);
+          sendTypingStatus(false);
+          return;
+        }
+      }
+
+      if (!hasFiles && plainText === '') return;
+
+      const mentionData = getMentions(mx, roomId, editor);
+      if (replyDraft && replyDraft.userId !== mx.getUserId()) {
+        mentionData.users.add(replyDraft.userId);
+      }
+      const mMentions = getMentionContent(
+        Array.from(mentionData.users),
+        mentionData.room
+      );
+
+      let relatesTo: Record<string, any> | undefined;
+      if (replyDraft) {
+        relatesTo = {
+          'm.in_reply_to': { event_id: replyDraft.eventId },
+        };
+        if (replyDraft.relation?.rel_type === RelationType.Thread) {
+          relatesTo.event_id = replyDraft.relation.event_id;
+          relatesTo.rel_type = RelationType.Thread;
+          relatesTo.is_falling_back = false;
+        }
+      }
+
+      if (hasFiles) {
+        pendingCaptionRef.current = {
+          body: plainText,
+          formattedBody:
+            customHtml && !customHtmlEqualsPlainText(customHtml, plainText)
+              ? customHtml
+              : undefined,
+          relatesTo,
+          mentions: mMentions,
+        };
+
+        uploadBoardHandlers.current?.handleSend();
+
         resetEditor(editor);
         resetEditorHistory(editor);
+        setReplyDraft(undefined);
         sendTypingStatus(false);
         return;
       }
 
-      if (plainText === '') return;
-
-      const body = plainText;
-      const formattedBody = customHtml;
-      const mentionData = getMentions(mx, roomId, editor);
-
       const content: IContent = {
         msgtype: msgType,
-        body,
+        body: plainText,
+        'm.mentions': mMentions,
       };
 
-      if (replyDraft && replyDraft.userId !== mx.getUserId()) {
-        mentionData.users.add(replyDraft.userId);
-      }
-
-      const mMentions = getMentionContent(Array.from(mentionData.users), mentionData.room);
-      content['m.mentions'] = mMentions;
-
-      if (replyDraft || !customHtmlEqualsPlainText(formattedBody, body)) {
+      if (relatesTo || !customHtmlEqualsPlainText(customHtml, plainText)) {
         content.format = 'org.matrix.custom.html';
-        content.formatted_body = formattedBody;
+        content.formatted_body = customHtml;
       }
-      if (replyDraft) {
-        content['m.relates_to'] = {
-          'm.in_reply_to': {
-            event_id: replyDraft.eventId,
-          },
-        };
-        if (replyDraft.relation?.rel_type === RelationType.Thread) {
-          content['m.relates_to'].event_id = replyDraft.relation.event_id;
-          content['m.relates_to'].rel_type = RelationType.Thread;
-          content['m.relates_to'].is_falling_back = false;
-        }
+      if (relatesTo) {
+        content['m.relates_to'] = relatesTo;
       }
+
       mx.sendMessage(roomId, content as any);
       resetEditor(editor);
       resetEditorHistory(editor);
       setReplyDraft(undefined);
       sendTypingStatus(false);
-    }, [mx, roomId, editor, replyDraft, sendTypingStatus, setReplyDraft, isMarkdown, commands]);
+    }, [
+      mx,
+      roomId,
+      editor,
+      replyDraft,
+      sendTypingStatus,
+      setReplyDraft,
+      isMarkdown,
+      commands,
+      selectedFiles,
+    ]);
 
     const handleKeyDown: KeyboardEventHandler = useCallback(
       (evt) => {
@@ -458,6 +694,8 @@ export const RoomInput = forwardRef<HTMLDivElement, RoomInputProps>(
                 onSend={handleSendUpload}
                 imperativeHandlerRef={uploadBoardHandlers}
                 onCancel={handleCancelUpload}
+                gallery={sendAsGallery}
+                onToggleGallery={() => setSendAsGallery(!sendAsGallery)}
               />
             }
           >

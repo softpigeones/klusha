@@ -3,6 +3,7 @@ import React, {
   MouseEventHandler,
   useCallback,
   useEffect,
+  useRef,
   useState,
 } from 'react';
 import {
@@ -17,11 +18,12 @@ import {
   Spinner,
   Text,
   as,
+  color,
   config,
 } from 'folds';
 import { Editor, Transforms } from 'slate';
 import { ReactEditor } from 'slate-react';
-import { IContent, IMentions, MatrixEvent, RelationType, Room } from 'matrix-js-sdk';
+import { IContent, IMentions, MatrixEvent, MsgType, RelationType, Room } from 'matrix-js-sdk';
 import { isKeyHotkey } from 'is-hotkey';
 import {
   AUTOCOMPLETE_PREFIXES,
@@ -54,6 +56,40 @@ import { useMatrixClient } from '../../../hooks/useMatrixClient';
 import { getEditedEvent, getMentionContent, trimReplyFromFormattedBody } from '../../../utils/room';
 import { mobileOrTablet } from '../../../utils/user-agent';
 import { useComposingCheck } from '../../../hooks/useComposingCheck';
+import { encryptFile } from '../../../utils/matrix';
+import { getDataTransferFiles } from '../../../utils/dom';
+import { safeFile } from '../../../utils/mimeTypes';
+import { TUploadItem } from '../../../state/room/roomInputDrafts';
+import { RenderMediaContent, isMediaMsgType } from '../../../components/RenderMediaContent';
+import {
+  isGalleryMsgType,
+  MATRIX_SPOILER_PROPERTY_NAME,
+  MATRIX_SPOILER_REASON_PROPERTY_NAME,
+} from '../../../../types/matrix/common';
+import {
+  getAudioMsgContent,
+  getFileMsgContent,
+  getImageMsgContent,
+  getVideoMsgContent,
+} from '../msgContent';
+
+const MEDIA_CONTENT_KEYS = [
+  'url',
+  'file',
+  'info',
+  'filename',
+  'itemtypes',
+  MATRIX_SPOILER_PROPERTY_NAME,
+  MATRIX_SPOILER_REASON_PROPERTY_NAME,
+];
+
+const pickMediaContent = (c: IContent): IContent => {
+  const picked: IContent = { msgtype: c.msgtype };
+  MEDIA_CONTENT_KEYS.forEach((key) => {
+    if (c[key] !== undefined) picked[key] = c[key];
+  });
+  return picked;
+};
 
 type MessageEditorProps = {
   roomId: string;
@@ -75,17 +111,27 @@ export const MessageEditor = as<'div', MessageEditorProps>(
     const [autocompleteQuery, setAutocompleteQuery] =
       useState<AutocompleteQuery<AutocompletePrefix>>();
 
+    const evtId = mEvent.getId()!;
+    const evtTimeline = room.getTimelineForEvent(evtId);
+    const editedEvent =
+      evtTimeline && getEditedEvent(evtId, mEvent, evtTimeline.getTimelineSet());
+    const content: IContent = editedEvent?.getContent()['m.new_content'] ?? mEvent.getContent();
+
+    const [mediaPatch, setMediaPatch] = useState<IContent>();
+    const media = mediaPatch ?? pickMediaContent(content);
+    const isMedia = isMediaMsgType(media.msgtype ?? '');
+    const hadCaption = isGalleryMsgType(content.msgtype)
+      ? !!content.body
+      : !!content.filename && content.filename !== content.body;
+
+    const fileInputRef = useRef<HTMLInputElement>(null);
+    const [replaceIndex, setReplaceIndex] = useState<number>();
+
     const getPrevBodyAndFormattedBody = useCallback((): [
       string | undefined,
       string | undefined,
       IMentions | undefined
     ] => {
-      const evtId = mEvent.getId()!;
-      const evtTimeline = room.getTimelineForEvent(evtId);
-      const editedEvent =
-        evtTimeline && getEditedEvent(evtId, mEvent, evtTimeline.getTimelineSet());
-
-      const content: IContent = editedEvent?.getContent()['m.new_content'] ?? mEvent.getContent();
       const { body, formatted_body: customHtml }: Record<string, unknown> = content;
 
       const mMentions: IMentions | undefined = content['m.mentions'];
@@ -110,8 +156,8 @@ export const MessageEditor = as<'div', MessageEditorProps>(
 
         const [prevBody, prevCustomHtml, prevMentions] = getPrevBodyAndFormattedBody();
 
-        if (plainText === '') return undefined;
-        if (prevBody) {
+        if (plainText === '' && (!mediaPatch || media.msgtype === MsgType.Text)) return undefined;
+        if (prevBody && !mediaPatch) {
           if (prevCustomHtml && trimReplyFromFormattedBody(prevCustomHtml) === customHtml) {
             return undefined;
           }
@@ -124,9 +170,14 @@ export const MessageEditor = as<'div', MessageEditorProps>(
           }
         }
 
+        const body =
+          plainText === '' || (!hadCaption && plainText === content.body)
+            ? media.filename ?? plainText
+            : plainText;
+
         const newContent: IContent = {
-          msgtype: mEvent.getContent().msgtype,
-          body: plainText,
+          ...media,
+          body,
         };
 
         const mentionData = getMentions(mx, roomId, editor);
@@ -143,9 +194,9 @@ export const MessageEditor = as<'div', MessageEditorProps>(
           newContent.formatted_body = customHtml;
         }
 
-        const content: IContent = {
+        const editContent: IContent = {
           ...newContent,
-          body: `* ${plainText}`,
+          body: `* ${body}`,
           'm.new_content': newContent,
           'm.relates_to': {
             event_id: mEvent.getId(),
@@ -153,15 +204,123 @@ export const MessageEditor = as<'div', MessageEditorProps>(
           },
         };
 
-        return mx.sendMessage(roomId, content);
-      }, [mx, editor, roomId, mEvent, isMarkdown, getPrevBodyAndFormattedBody])
+        return mx.sendMessage(roomId, editContent);
+      }, [
+        mx,
+        editor,
+        roomId,
+        mEvent,
+        isMarkdown,
+        getPrevBodyAndFormattedBody,
+        media,
+        mediaPatch,
+        hadCaption,
+        content,
+      ])
+    );
+
+    const [replaceState, replaceMedia] = useAsyncCallback(
+      useCallback(
+        async (file: File, index: number) => {
+          const safe = safeFile(file);
+          const encrypted = room.hasEncryptionStateEvent();
+          const item: TUploadItem = encrypted
+            ? { ...(await encryptFile(safe)), metadata: { markedAsSpoiler: false } }
+            : {
+                file: safe,
+                originalFile: safe,
+                encInfo: undefined,
+                metadata: { markedAsSpoiler: false },
+              };
+
+          const upload = await mx.uploadContent(item.file, { includeFilename: !encrypted });
+          const mxc = upload.content_uri;
+          if (!mxc) throw new Error('Upload failed');
+
+          let built: IContent;
+          if (item.file.type.startsWith('image')) {
+            built = await getImageMsgContent(mx, item, mxc);
+          } else if (item.file.type.startsWith('video')) {
+            built = await getVideoMsgContent(mx, item, mxc);
+          } else if (item.file.type.startsWith('audio')) {
+            built = getAudioMsgContent(item, mxc);
+          } else {
+            built = getFileMsgContent(item, mxc);
+          }
+
+          setMediaPatch((prev) => {
+            const cur = prev ?? pickMediaContent(content);
+            if (isGalleryMsgType(cur.msgtype) && Array.isArray(cur.itemtypes)) {
+              const { msgtype, ...rest } = built;
+              const nextItem = { ...rest, itemtype: msgtype };
+              return {
+                ...cur,
+                itemtypes: cur.itemtypes.map((it: unknown, i: number) =>
+                  i === index ? nextItem : it
+                ),
+              };
+            }
+            return pickMediaContent(built);
+          });
+        },
+        [mx, room, content]
+      )
+    );
+
+    const handleReplaceMedia = useCallback((index: number) => setReplaceIndex(index), []);
+
+    const startReplace = useCallback(
+      (file: File) => {
+        if (replaceIndex === undefined) return;
+        setReplaceIndex(undefined);
+        replaceMedia(file, replaceIndex);
+      },
+      [replaceIndex, replaceMedia]
+    );
+
+    useEffect(() => {
+      if (replaceIndex === undefined) return undefined;
+      const handlePaste = (evt: ClipboardEvent) => {
+        const files = evt.clipboardData ? getDataTransferFiles(evt.clipboardData) : undefined;
+        if (!files || files.length === 0) return;
+        evt.preventDefault();
+        evt.stopPropagation();
+        setReplaceIndex(undefined);
+        replaceMedia(files[0], replaceIndex);
+      };
+      document.addEventListener('paste', handlePaste, true);
+      return () => document.removeEventListener('paste', handlePaste, true);
+    }, [replaceIndex, replaceMedia]);
+
+    const handleRemoveMedia = useCallback(
+      (index: number) => {
+        setReplaceIndex(undefined);
+        setMediaPatch((prev) => {
+          const cur = prev ?? pickMediaContent(content);
+          if (isGalleryMsgType(cur.msgtype) && Array.isArray(cur.itemtypes)) {
+            const left = cur.itemtypes.filter((_: unknown, i: number) => i !== index);
+            if (left.length > 1) return { ...cur, itemtypes: left };
+            const [last] = left;
+            if (left.length === 1 && typeof last === 'object' && last !== null) {
+              const { itemtype, ...rest } = last;
+              return pickMediaContent({
+                ...rest,
+                msgtype: itemtype,
+                filename: rest.filename ?? rest.body,
+              });
+            }
+          }
+          return { msgtype: MsgType.Text };
+        });
+      },
+      [content]
     );
 
     const handleSave = useCallback(() => {
-      if (saveState.status !== AsyncStatus.Loading) {
+      if (saveState.status !== AsyncStatus.Loading && replaceState.status !== AsyncStatus.Loading) {
         save();
       }
-    }, [saveState, save]);
+    }, [saveState, replaceState, save]);
 
     const handleKeyDown: KeyboardEventHandler = useCallback(
       (evt) => {
@@ -231,6 +390,72 @@ export const MessageEditor = as<'div', MessageEditorProps>(
 
     return (
       <div {...props} ref={ref}>
+        {isMedia && (
+          <RenderMediaContent
+            msgType={media.msgtype ?? ''}
+            getContent={<T,>() => ({ ...media, body: media.filename ?? content.body } as T)}
+            mediaAutoLoad
+            onRemove={handleRemoveMedia}
+            onReplace={handleReplaceMedia}
+          />
+        )}
+        <input
+          ref={fileInputRef}
+          type="file"
+          hidden
+          onChange={(evt) => {
+            const file = evt.target.files?.[0];
+            evt.target.value = '';
+            if (file) startReplace(file);
+          }}
+        />
+        {replaceIndex !== undefined && (
+          <Box
+            direction="Column"
+            alignItems="Center"
+            gap="200"
+            style={{
+              margin: config.space.S200,
+              padding: config.space.S300,
+              border: `${config.borderWidth.B300} dashed ${color.SurfaceVariant.ContainerLine}`,
+              borderRadius: config.radii.R300,
+            }}
+            onDragOver={(evt: React.DragEvent) => evt.preventDefault()}
+            onDrop={(evt: React.DragEvent) => {
+              evt.preventDefault();
+              const files = getDataTransferFiles(evt.dataTransfer);
+              if (files && files[0]) startReplace(files[0]);
+            }}
+          >
+            <Text size="T300" style={{ textAlign: 'center' }}>
+              Paste a file (Ctrl+V), drop it here, or choose from disk
+            </Text>
+            <Box gap="200">
+              <Chip
+                variant="Primary"
+                radii="Pill"
+                outlined
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <Text size="B300">Choose file</Text>
+              </Chip>
+              <Chip variant="SurfaceVariant" radii="Pill" onClick={() => setReplaceIndex(undefined)}>
+                <Text size="B300">Cancel</Text>
+              </Chip>
+            </Box>
+          </Box>
+        )}
+        {replaceState.status === AsyncStatus.Loading && (
+          <Box alignItems="Center" gap="200" style={{ padding: config.space.S200 }}>
+            <Spinner size="100" />
+            <Text size="T200">Uploading...</Text>
+          </Box>
+        )}
+        {replaceState.status === AsyncStatus.Error && (
+          <Text size="T200" style={{ color: color.Critical.Main, padding: config.space.S200 }}>
+            Failed to replace file
+          </Text>
+        )}
         {autocompleteQuery?.prefix === AutocompletePrefix.RoomMention && (
           <RoomMentionAutocomplete
             roomId={roomId}
@@ -273,7 +498,10 @@ export const MessageEditor = as<'div', MessageEditorProps>(
                     onClick={handleSave}
                     variant="Primary"
                     radii="Pill"
-                    disabled={saveState.status === AsyncStatus.Loading}
+                    disabled={
+                      saveState.status === AsyncStatus.Loading ||
+                      replaceState.status === AsyncStatus.Loading
+                    }
                     outlined
                     before={
                       saveState.status === AsyncStatus.Loading ? (

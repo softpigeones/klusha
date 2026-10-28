@@ -23,6 +23,7 @@ import {
   RoomEvent,
   RoomEventHandlerMap,
 } from 'matrix-js-sdk';
+import { RoomEncryptionEventContent } from 'matrix-js-sdk/lib/types';
 import { HTMLReactParserOptions } from 'html-react-parser';
 import classNames from 'classnames';
 import { ReactEditor } from 'slate-react';
@@ -102,7 +103,12 @@ import { inSameDay, minuteDifference, timeDayMonthYear, today, yesterday } from 
 import { createMentionElement, isEmptyEditor, moveCursor } from '../../components/editor';
 import { roomIdToReplyDraftAtomFamily } from '../../state/room/roomInputDrafts';
 import { usePowerLevelsContext } from '../../hooks/usePowerLevels';
-import { GetContentCallback, MessageEvent, StateEvent } from '../../../types/matrix/room';
+import {
+  GetContentCallback,
+  MessageEvent,
+  MSC4362_ENCRYPT_STATE_EVENTS_PROPERTY,
+  StateEvent,
+} from '../../../types/matrix/room';
 import { useKeyDown } from '../../hooks/useKeyDown';
 import { useDocumentFocusChange } from '../../hooks/useDocumentFocusChange';
 import { RenderMessageContent } from '../../components/RenderMessageContent';
@@ -1513,6 +1519,57 @@ export function RoomTimeline({ room, eventId, roomInputRef, editor }: RoomTimeli
                   <Text size="T300" priority="300">
                     <b>{senderName}</b>
                     {callJoined ? ' joined the call' : ' ended the call'}
+                  </Text>
+                </Box>
+              }
+            />
+          </Event>
+        );
+      },
+      [StateEvent.RoomEncryption]: (mEventId, mEvent, item) => {
+        const highlighted = focusItem?.index === item && focusItem.highlight;
+        const senderId = mEvent.getSender() ?? '';
+        const senderName = getMemberDisplayName(room, senderId) || getMxIdLocalPart(senderId);
+
+        // MSC4362, the room also encrypts its state events
+        const stateEncrypted =
+          mEvent.getContent<RoomEncryptionEventContent & Record<string, unknown>>()[
+            MSC4362_ENCRYPT_STATE_EVENTS_PROPERTY
+          ] === true;
+
+        const timeJSX = (
+          <Time
+            ts={mEvent.getTs()}
+            compact={messageLayout === MessageLayout.Compact}
+            hour24Clock={hour24Clock}
+            dateFormatString={dateFormatString}
+          />
+        );
+
+        return (
+          <Event
+            key={mEvent.getId()}
+            data-message-item={item}
+            data-message-id={mEventId}
+            room={room}
+            mEvent={mEvent}
+            highlight={highlighted}
+            messageSpacing={messageSpacing}
+            canDelete={canRedact || mEvent.getSender() === mx.getUserId()}
+            hideReadReceipts={hideActivity}
+            showDeveloperTools={showDeveloperTools}
+          >
+            <EventContent
+              messageLayout={messageLayout}
+              time={timeJSX}
+              iconSrc={Icons.Lock}
+              content={
+                <Box grow="Yes" direction="Column">
+                  <Text size="T300" priority="300">
+                    <b>{senderName}</b>
+                    {stateEncrypted
+                      ? ' enabled encryption for messages and room metadata'
+                      : ' enabled encryption for this room'}
                   </Text>
                 </Box>
               }

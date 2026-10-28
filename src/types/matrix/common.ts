@@ -5,6 +5,12 @@ export const MATRIX_BLUR_HASH_PROPERTY_NAME = 'xyz.amorgan.blurhash';
 export const MATRIX_SPOILER_PROPERTY_NAME = 'page.codeberg.everypizza.msc4193.spoiler';
 export const MATRIX_SPOILER_REASON_PROPERTY_NAME = 'page.codeberg.everypizza.msc4193.spoiler.reason';
 
+// MSC4274: inline media galleries via msgtypes
+export const MATRIX_GALLERY_MSGTYPE = 'm.gallery';
+export const MATRIX_GALLERY_UNSTABLE_MSGTYPE = 'dm.filament.gallery';
+export const isGalleryMsgType = (msgType: unknown): boolean =>
+  msgType === MATRIX_GALLERY_MSGTYPE || msgType === MATRIX_GALLERY_UNSTABLE_MSGTYPE;
+
 export type IImageInfo = {
   w?: number;
   h?: number;
@@ -87,4 +93,23 @@ export type ILocationContent = {
   body?: string;
   geo_uri?: string;
   info?: IThumbnailContent;
+};
+
+export type IGalleryItemType = MsgType.Image | MsgType.Video | MsgType.Audio | MsgType.File;
+
+// Same schema as the content of the matching msgtype, but keyed by `itemtype`
+// instead of `msgtype`.
+export type IGalleryItem = Omit<
+  IImageContent | IVideoContent | IAudioContent | IFileContent,
+  'msgtype'
+> & {
+  itemtype: IGalleryItemType;
+};
+
+export type IGalleryContent = {
+  msgtype: typeof MATRIX_GALLERY_MSGTYPE | typeof MATRIX_GALLERY_UNSTABLE_MSGTYPE;
+  body?: string;
+  format?: string;
+  formatted_body?: string;
+  itemtypes?: IGalleryItem[];
 };

@@ -33,6 +33,8 @@ type UploadBoardHeaderProps = {
   onCancel: (uploads: Upload[]) => void;
   onSend: (uploads: UploadSuccess[]) => Promise<void>;
   imperativeHandlerRef: MutableRefObject<UploadBoardImperativeHandlers | undefined>;
+  gallery?: boolean;
+  onToggleGallery?: () => void;
 };
 
 export function UploadBoardHeader({
@@ -42,6 +44,8 @@ export function UploadBoardHeader({
   onCancel,
   onSend,
   imperativeHandlerRef,
+  gallery,
+  onToggleGallery,
 }: UploadBoardHeaderProps) {
   const sendingRef = useRef(false);
   const uploads = useAtomValue(uploadFamilyObserverAtom);
@@ -91,6 +95,18 @@ export function UploadBoardHeader({
         <Text size="H6">Files</Text>
       </Box>
       <Box className={css.UploadBoardHeaderContent} alignItems="Center" gap="100">
+        {onToggleGallery && uploads.length > 1 && (
+          <Chip
+            as="button"
+            onClick={onToggleGallery}
+            aria-pressed={gallery}
+            variant={gallery ? 'Primary' : 'SurfaceVariant'}
+            radii="Pill"
+            before={<Icon src={Icons.Photo} size="50" filled={gallery} />}
+          >
+            <Text size="B300">Gallery</Text>
+          </Chip>
+        )}
         {isSuccess && (
           <Chip
             as="button"

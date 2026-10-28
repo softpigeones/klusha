@@ -22,14 +22,20 @@ export function CreateChat({ defaultUserId }: CreateChatProps) {
   const navigate = useNavigate();
 
   const [encryption, setEncryption] = useState(true);
+  const [stateEncryption, setStateEncryption] = useState(false);
   const [invalidUserId, setInvalidUserId] = useState(false);
 
-  const [createState, create] = useAsyncCallback<string, Error | MatrixError, [string, boolean]>(
+  const [createState, create] = useAsyncCallback<
+    string,
+    Error | MatrixError,
+    [string, boolean, boolean]
+  >(
     useCallback(
-      async (userId, encrypted) => {
+      async (userId, encrypted, encryptedState) => {
         const initialState: ICreateRoomStateEvent[] = [];
 
-        if (encrypted) initialState.push(createRoomEncryptionState());
+        // MSC4362, encrypted state requires an encrypted room
+        if (encrypted) initialState.push(createRoomEncryptionState(encrypted && encryptedState));
 
         const result = await mx.createRoom({
           is_direct: true,
@@ -64,7 +70,7 @@ export function CreateChat({ defaultUserId }: CreateChatProps) {
       return;
     }
 
-    create(userId, encryption).then((roomId) => {
+    create(userId, encryption, stateEncryption).then((roomId) => {
       if (alive()) {
         userIdInput.value = '';
         navigate(getDirectRoomPath(roomId));
@@ -118,6 +124,27 @@ export function CreateChat({ defaultUserId }: CreateChatProps) {
             }
           />
         </SequenceCard>
+        {encryption && (
+          <SequenceCard
+            style={{ padding: config.space.S300 }}
+            variant="SurfaceVariant"
+            direction="Column"
+            gap="500"
+          >
+            <SettingTile
+              title="Encrypt Room Metadata"
+              description="Encrypts room state such as name, topic and avatar (MSC4362). Clients without support can't read them. Can't be disabled after the room is created."
+              after={
+                <Switch
+                  variant="Primary"
+                  value={stateEncryption}
+                  onChange={setStateEncryption}
+                  disabled={disabled}
+                />
+              }
+            />
+          </SequenceCard>
+        )}
       </Box>
       {error && (
         <Box style={{ color: color.Critical.Main }} alignItems="Center" gap="200">
